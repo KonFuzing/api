@@ -50,6 +50,7 @@ func main() {
 	httpHandler := handler.NewHttpHandler(svc)
 
 	// 6. Run
+	http.HandleFunc("/duel", httpHandler.HandleDuel)
 	http.HandleFunc("/history", httpHandler.HandleHistory)
 	fmt.Printf("⚔️ Arena Service running on :%s\n", port)
 	http.ListenAndServe(":"+port, nil)

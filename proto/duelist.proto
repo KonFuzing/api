@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package duelist;
+option go_package = "github.com/yourusername/cowboy_arena/proto"; // เปลี่ยน path ตาม module ของคุณ
+
+service DuelistService {
+  // สร้าง Cowboy ใหม่
+  rpc CreateCowboy (CreateCowboyRequest) returns (CowboyResponse);
+  // ดึงข้อมูล Cowboy ตาม ID
+  rpc GetCowboy (GetCowboyRequest) returns (CowboyResponse);
+}
+
+message CowboyResponse {
+  string id = 1;
+  string name = 2;
+  int32 health = 3;
+  int32 damage = 4;
+  int32 speed = 5;
+  double accuracy = 6;
+}
+
+message CreateCowboyRequest {
+  string id = 1;
+  string name = 2;
+  int32 health = 3;
+  int32 damage = 4;
+  int32 speed = 5;
+  double accuracy = 6;
+}
+
+message GetCowboyRequest {
+  string id = 1;
+}

@@ -1,15 +1,21 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
-	"strings" // ใช้สำหรับรวม Logs เป็น string เดียว
+	"strings"
 	"time"
 
+	// Import package ที่ generate มา
+	pb "github.com/yourusername/cowboy_arena/proto"
+
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -17,15 +23,16 @@ import (
 // --- Config Part ---
 type Config struct {
 	Port          string
-	DuelistSvcURL string
-	DBUrl         string // เพิ่มตัวแปรรับ DSN
+	DuelistSvcTarget string // เปลี่ยนจาก URL เป็น Target (host:port)
+	DBUrl         string
 }
 
 func LoadConfig() Config {
 	return Config{
 		Port:          getEnv("ARENA_PORT", "8081"),
-		DuelistSvcURL: getEnv("DUELIST_URL", "http://localhost:8080"),
-		DBUrl:         getEnv("DB_DSN", ""), // อ่านค่า Connection String
+		// gRPC connect แบบ "host:port" ไม่ต้องมี http://
+		DuelistSvcTarget: getEnv("DUELIST_TARGET", "localhost:50051"),
+		DBUrl:         getEnv("DB_DSN", ""),
 	}
 }
 
@@ -37,10 +44,12 @@ func getEnv(key, fallback string) string {
 }
 
 var cfg Config
-var db *gorm.DB // Global variable สำหรับ Database
+var db *gorm.DB
+var grpcClient pb.DuelistServiceClient // เก็บ Client ไว้เรียกใช้
 
 // --- Models ---
-// Cowboy (เหมือนเดิม)
+// เราสามารถใช้ struct เดิม หรือ map ข้อมูลจาก pb.CowboyResponse ก็ได้
+// เพื่อความง่ายในการคำนวณขอใช้ struct เดิม แต่เขียน function แปลงข้อมูล
 type Cowboy struct {
 	ID       string  `json:"id"`
 	Name     string  `json:"name"`
@@ -60,23 +69,20 @@ type DuelResult struct {
 	Logs   []string `json:"battle_logs"`
 }
 
-// --- Database Models ---
-// BattleRecord: ตารางเก็บประวัติการดวล
 type BattleRecord struct {
 	ID         uint      `gorm:"primaryKey" json:"id"`
 	Fighter1ID string    `json:"fighter_1_id"`
 	Fighter2ID string    `json:"fighter_2_id"`
 	Winner     string    `json:"winner"`
-	Logs       string    `gorm:"type:text" json:"logs"` // เก็บ Log ยาวๆ เป็น Text
+	Logs       string    `gorm:"type:text" json:"logs"`
 	CreatedAt  time.Time `json:"created_at"`
 }
 
 // --- Main ---
 
 func main() {
-	// Load Env
 	if err := godotenv.Load("../../.env"); err != nil {
-		log.Println("Note: ไม่พบไฟล์ .env ที่ชั้นนอก")
+		log.Println("Note: ไม่พบไฟล์ .env")
 	}
 
 	cfg = LoadConfig()
@@ -84,29 +90,35 @@ func main() {
 	// 1. เชื่อมต่อ Database
 	initDB()
 
+	// 2. เชื่อมต่อ gRPC ไปยัง Duelist Service
+	// ใช้ WithTransportCredentials(insecure) สำหรับ local dev (ไม่มี SSL)
+	conn, err := grpc.NewClient(cfg.DuelistSvcTarget, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		log.Fatalf("❌ Failed to connect to Duelist Service: %v", err)
+	}
+	defer conn.Close()
+	
+	// สร้าง Client instance
+	grpcClient = pb.NewDuelistServiceClient(conn)
+	fmt.Printf("✅ Connected to Duelist Service at %s\n", cfg.DuelistSvcTarget)
+
 	http.HandleFunc("/duel", handleDuel)
-	// แถม: API ดูประวัติการดวล
 	http.HandleFunc("/history", handleHistory)
 
-	fmt.Printf("⚔️ Arena Service running on port :%s\n", cfg.Port)
+	fmt.Printf("⚔️ Arena Service (HTTP) running on port :%s\n", cfg.Port)
 	http.ListenAndServe(":"+cfg.Port, nil)
 }
 
-// ฟังก์ชันเชื่อมต่อ Database
 func initDB() {
 	var err error
-	// เปิด Connection ไปยัง Postgres
 	db, err = gorm.Open(postgres.Open(cfg.DBUrl), &gorm.Config{})
 	if err != nil {
 		log.Fatalf("❌ Failed to connect to database: %v", err)
 	}
-
-	// Auto Migrate: สร้างตาราง BattleRecord อัตโนมัติถ้ายังไม่มี
 	err = db.AutoMigrate(&BattleRecord{})
 	if err != nil {
 		log.Fatalf("❌ Failed to migrate database: %v", err)
 	}
-	fmt.Println("✅ Database connected and migrated successfully!")
 }
 
 func handleDuel(w http.ResponseWriter, r *http.Request) {
@@ -120,80 +132,73 @@ func handleDuel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch ข้อมูล Cowboy
-	c1, err1 := fetchCowboy(req.Fighter1ID)
-	c2, err2 := fetchCowboy(req.Fighter2ID)
+	// Fetch ข้อมูล Cowboy ผ่าน gRPC
+	c1, err1 := fetchCowboyGRPC(req.Fighter1ID)
+	c2, err2 := fetchCowboyGRPC(req.Fighter2ID)
 
 	if err1 != nil || err2 != nil {
-		http.Error(w, fmt.Sprintf("Error fetching cowboys: %v %v", err1, err2), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error fetching cowboys via gRPC: %v %v", err1, err2), http.StatusInternalServerError)
 		return
 	}
 
-	// คำนวณผลการต่อสู้
 	result := simulateFight(c1, c2)
 
-	// 2. บันทึกผลลง Database
 	record := BattleRecord{
 		Fighter1ID: req.Fighter1ID,
 		Fighter2ID: req.Fighter2ID,
 		Winner:     result.Winner,
-		// แปลง []string เป็น string ยาวๆ คั่นด้วยบรรทัดใหม่ เพื่อเก็บลง DB
-		Logs: strings.Join(result.Logs, "\n"),
+		Logs:       strings.Join(result.Logs, "\n"),
 	}
 
-	// สั่ง Save ลง DB (Async เพื่อไม่ให้ Response ช้าเกินไป หรือจะรอผลก็ได้)
 	if err := db.Create(&record).Error; err != nil {
 		log.Printf("⚠️ Error saving battle record: %v", err)
-	} else {
-		log.Printf("✅ Battle record saved! ID: %d", record.ID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(result)
 }
 
-// API สำหรับดูประวัติการดวลทั้งหมด
 func handleHistory(w http.ResponseWriter, r *http.Request) {
 	var history []BattleRecord
-	// ดึงข้อมูลทั้งหมดจากตาราง battle_records เรียงตามเวลาล่าสุด
 	result := db.Order("created_at desc").Find(&history)
 	if result.Error != nil {
 		http.Error(w, result.Error.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(history)
 }
 
-// fetchCowboy (เหมือนเดิม)
-func fetchCowboy(id string) (*Cowboy, error) {
-	url := fmt.Sprintf("%s/cowboys/%s", cfg.DuelistSvcURL, id)
-	resp, err := http.Get(url)
+// ฟังก์ชันใหม่: ดึงข้อมูลผ่าน gRPC
+func fetchCowboyGRPC(id string) (*Cowboy, error) {
+	// สร้าง Context พร้อม Timeout (Best Practice)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+	defer cancel()
+
+	// เรียก gRPC method
+	resp, err := grpcClient.GetCowboy(ctx, &pb.GetCowboyRequest{Id: id})
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("cowboy not found")
-	}
-
-	var c Cowboy
-	if err := json.NewDecoder(resp.Body).Decode(&c); err != nil {
-		return nil, err
-	}
-	return &c, nil
+	// แปลงจาก gRPC struct กลับมาเป็น Domain struct (Cowboy)
+	return &Cowboy{
+		ID:       resp.Id,
+		Name:     resp.Name,
+		Health:   int(resp.Health),
+		Damage:   int(resp.Damage),
+		Speed:    int(resp.Speed),
+		Accuracy: resp.Accuracy,
+	}, nil
 }
 
 func simulateFight(c1, c2 *Cowboy) DuelResult {
-	// ... Logic การต่อสู้ (สมมติว่าเหมือนเดิม) ...
 	var logs []string
 	logs = append(logs, fmt.Sprintf("Match Start: %s VS %s", c1.Name, c2.Name))
-
-	// Dummy Logic
+	
+	// Dummy Logic เดิม
 	winner := c1.Name
-	logs = append(logs, fmt.Sprintf("%s fires a shot!", c1.Name))
+	logs = append(logs, fmt.Sprintf("%s fires a shot with %d damage!", c1.Name, c1.Damage))
 	logs = append(logs, fmt.Sprintf("%s wins!", winner))
 
 	return DuelResult{Winner: winner, Logs: logs}

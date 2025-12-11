@@ -1,14 +1,18 @@
 package main
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"log"
-	"net/http"
+	"net"
 	"os"
 	"sync"
 
+	// Import package ที่ generate มา (เปลี่ยน path ตาม project จริง)
+	pb "github.com/yourusername/cowboy_arena/proto"
+
 	"github.com/joho/godotenv"
+	"google.golang.org/grpc"
 )
 
 // --- Config Part ---
@@ -16,15 +20,13 @@ type Config struct {
 	Port string
 }
 
-// โหลด Config จาก Env ถ้าไม่มีให้ใช้ค่า Default
 func LoadConfig() Config {
-	// อ่านตัวแปรชื่อใหม่: DUELIST_PORT
 	return Config{
-		Port: getEnv("DUELIST_PORT", "8080"),
+		// gRPC มักไม่ใช้ 8080 (ที่เป็น HTTP) อาจจะใช้ 50051 หรือพอร์ตเดิมก็ได้
+		Port: getEnv("DUELIST_PORT", "50051"),
 	}
 }
 
-// Helper function อ่านค่า Env
 func getEnv(key, fallback string) string {
 	if value, exists := os.LookupEnv(key); exists {
 		return value
@@ -32,65 +34,70 @@ func getEnv(key, fallback string) string {
 	return fallback
 }
 
-// --- Domain & Handlers ---
-type Cowboy struct {
-	ID       string  `json:"id"`
-	Name     string  `json:"name"`
-	Health   int     `json:"health"`
-	Damage   int     `json:"damage"`
-	Speed    int     `json:"speed"`
-	Accuracy float64 `json:"accuracy"`
+// --- Domain Implementation ---
+// สร้าง struct เพื่อ implement interface ของ gRPC
+type duelistServer struct {
+	pb.UnimplementedDuelistServiceServer
+	db map[string]*pb.CowboyResponse
+	mu sync.Mutex
 }
 
-var (
-	db = make(map[string]Cowboy)
-	mu sync.Mutex
-)
+// Implement: CreateCowboy
+func (s *duelistServer) CreateCowboy(ctx context.Context, req *pb.CreateCowboyRequest) (*pb.CowboyResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cowboy := &pb.CowboyResponse{
+		Id:       req.Id,
+		Name:     req.Name,
+		Health:   req.Health,
+		Damage:   req.Damage,
+		Speed:    req.Speed,
+		Accuracy: req.Accuracy,
+	}
+
+	s.db[req.Id] = cowboy
+	fmt.Printf("[Duelist] Created: %s (ID: %s)\n", req.Name, req.Id)
+	return cowboy, nil
+}
+
+// Implement: GetCowboy
+func (s *duelistServer) GetCowboy(ctx context.Context, req *pb.GetCowboyRequest) (*pb.CowboyResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	cowboy, exists := s.db[req.Id]
+	if !exists {
+		return nil, fmt.Errorf("cowboy not found with id: %s", req.Id)
+	}
+
+	return cowboy, nil
+}
 
 func main() {
 	if err := godotenv.Load("../../.env"); err != nil {
-		log.Println("Note: ไม่พบไฟล์ .env ที่ชั้นนอก (../.env)")
+		log.Println("Note: ไม่พบไฟล์ .env")
 	}
 
 	cfg := LoadConfig()
 
-	http.HandleFunc("/cowboys", handleCreate)
-	http.HandleFunc("/cowboys/", handleGetOne)
+	// 1. สร้าง Listener บน TCP
+	lis, err := net.Listen("tcp", ":"+cfg.Port)
+	if err != nil {
+		log.Fatalf("failed to listen: %v", err)
+	}
 
-	fmt.Printf("🤠 Duelist Service running on port :%s\n", cfg.Port)
-	log.Fatal(http.ListenAndServe(":"+cfg.Port, nil))
-}
+	// 2. สร้าง gRPC Server
+	grpcServer := grpc.NewServer()
 
-func handleCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+	// 3. Register Service ที่เรา implement เข้าไป
+	service := &duelistServer{
+		db: make(map[string]*pb.CowboyResponse),
 	}
-	var c Cowboy
-	if err := json.NewDecoder(r.Body).Decode(&c); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	mu.Lock()
-	db[c.ID] = c
-	mu.Unlock()
-	w.WriteHeader(http.StatusCreated)
-	json.NewEncoder(w).Encode(c)
-	fmt.Printf("[Duelist] Created: %s\n", c.Name)
-}
+	pb.RegisterDuelistServiceServer(grpcServer, service)
 
-func handleGetOne(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
-		return
+	fmt.Printf("🤠 Duelist Service (gRPC) running on port :%s\n", cfg.Port)
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("failed to serve: %v", err)
 	}
-	id := r.URL.Path[len("/cowboys/"):]
-	mu.Lock()
-	c, exists := db[id]
-	mu.Unlock()
-	if !exists {
-		http.Error(w, "Cowboy not found", http.StatusNotFound)
-		return
-	}
-	json.NewEncoder(w).Encode(c)
 }

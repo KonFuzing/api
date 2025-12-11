@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
+	"os" // ยังต้องใช้ os เพื่อ override ชื่อ ENV เฉพาะของ service นี้
 
-	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
 
-	// Import Internal Packages (Hexagonal Layers)
-	"api/pkg/database" // Shared Database Package
+	// Import Packages
+	"api/pkg/config" // ✅ เรียกใช้ Config Package
+	"api/pkg/database"
 	pb "api/proto"
 	"api/services/duelist/internal/adapters/handler"
 	"api/services/duelist/internal/adapters/repository"
@@ -18,45 +18,38 @@ import (
 )
 
 func main() {
-	// 1. Load Environment Variables
-	// ปรับ Path .env ตามความเหมาะสมของโครงสร้าง Folder จริง
-	if err := godotenv.Load("../../../.env"); err != nil {
-		log.Println("⚠️  Warning: .env file not found, using system environment variables")
+	// 1. Load Config
+	cfg := config.LoadConfig()
+
+	// ⚠️ Override Port สำหรับ Duelist โดยเฉพาะ
+	// (เพราะใน config กลางอาจจะเป็นค่า default)
+	if p := os.Getenv("DUELIST_PORT"); p != "" {
+		cfg.AppPort = p
 	}
 
-	dsn := os.Getenv("DB_DSN")
-	port := os.Getenv("DUELIST_PORT")
-
-	// 2. Initialize Infrastructure (Database Singleton)
-	db, err := database.GetInstance(dsn)
+	// 2. Initialize Infrastructure (DB Singleton)
+	// ใช้ค่าจาก cfg แทน os.Getenv
+	db, err := database.GetInstance(cfg.DBUrl)
 	if err != nil {
 		log.Fatalf("❌ Failed to initialize database: %v", err)
 	}
-	fmt.Println("✅ Database connected successfully (Duelist)")
 
-	// 3. Initialize Adapters (Secondary / Outbound)
-	// Inject DB instance เข้าไปใน Repository
+	// 3. Setup Layers (เหมือนเดิม)
 	repoAdapter := repository.NewMySQLRepository(db)
-
-	// 4. Initialize Core Domain Service
-	// Inject Repository เข้าไปใน Service (Business Logic)
 	svc := services.NewDuelistService(repoAdapter)
-
-	// 5. Initialize Primary Adapter (Inbound / Handler)
-	// Inject Service เข้าไปใน gRPC Handler
 	grpcHandler := handler.NewGrpcHandler(svc)
 
-	// 6. Start gRPC Server
-	lis, err := net.Listen("tcp", ":"+port)
+	// 4. Start Server (ใช้ Port จาก cfg)
+	lis, err := net.Listen("tcp", ":"+cfg.AppPort)
 	if err != nil {
-		log.Fatalf("❌ Failed to listen on port %s: %v", port, err)
+		log.Fatalf("❌ Failed to listen: %v", err)
 	}
 
 	grpcServer := grpc.NewServer()
 	pb.RegisterDuelistServiceServer(grpcServer, grpcHandler)
 
-	fmt.Printf("🤠 Duelist Service (Hexagonal + gRPC) running on port :%s\n", port)
+	fmt.Printf("🤠 Duelist Service running on port :%s\n", cfg.AppPort)
 	if err := grpcServer.Serve(lis); err != nil {
-		log.Fatalf("❌ Failed to serve gRPC: %v", err)
+		log.Fatalf("❌ Failed to serve: %v", err)
 	}
 }

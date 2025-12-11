@@ -17,6 +17,10 @@ type cowboyModel struct {
 	Accuracy float64
 }
 
+func (cowboyModel) TableName() string {
+	return "cowboys"
+}
+
 // แปลงจาก Model -> Domain
 func (m *cowboyModel) toDomain() *domain.Cowboy {
 	return &domain.Cowboy{

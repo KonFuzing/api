@@ -15,6 +15,10 @@ func NewArenaService(p ports.CowboyProvider, r ports.BattleRepository) ports.Are
 	return &service{provider: p, repo: r}
 }
 
+func (s *service) GetHistory(limit int, fighterID string) ([]domain.BattleResult, error) {
+	return s.repo.GetHistory(limit, fighterID)
+}
+
 func (s *service) Duel(id1, id2 string) (*domain.BattleResult, error) {
 	// 1. เรียกข้อมูลจาก Port (Adapter จะไปเรียก gRPC)
 	c1, err := s.provider.GetCowboy(id1)
@@ -36,8 +40,4 @@ func (s *service) Duel(id1, id2 string) (*domain.BattleResult, error) {
 	}
 
 	return &result, nil
-}
-
-func (s *service) GetHistory() ([]domain.BattleResult, error) {
-	return s.repo.GetAll()
 }

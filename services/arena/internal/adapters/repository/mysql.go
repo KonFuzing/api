@@ -51,3 +51,37 @@ func (r *mysqlRepo) GetAll() ([]domain.BattleResult, error) {
 	}
 	return results, nil
 }
+
+func (r *mysqlRepo) GetHistory(limit int, fighterID string) ([]domain.BattleResult, error) {
+	var models []battleModel
+	
+	// เริ่มต้น Query
+	query := r.db.Order("created_at desc")
+
+	// 1. ถ้ามี limit ให้ใส่ limit (ถ้าเป็น 0 ให้ default สัก 50 กันบึ้ม)
+	if limit > 0 {
+		query = query.Limit(limit)
+	} else {
+		query = query.Limit(50) 
+	}
+
+	// 2. ถ้าระบุ fighterID ให้หาทั้งช่อง fighter1 หรือ fighter2
+	if fighterID != "" {
+		query = query.Where("fighter1_id = ? OR fighter2_id = ?", fighterID, fighterID)
+	}
+
+	// รัน Query
+	if err := query.Find(&models).Error; err != nil {
+		return nil, err
+	}
+	
+	// แปลงเป็น Domain Object (เหมือนเดิม)
+	var results []domain.BattleResult
+	for _, m := range models {
+		results = append(results, domain.BattleResult{
+			Winner: m.Winner,
+			Logs:   strings.Split(m.Logs, "\n"),
+		})
+	}
+	return results, nil
+}

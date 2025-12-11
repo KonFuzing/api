@@ -1,10 +1,6 @@
 package main
 
 import (
-	pb "api/proto"
-	"api/services/duelist/internal/adapters/handler"
-	"api/services/duelist/internal/adapters/repository"
-	"api/services/duelist/internal/core/services"
 	"fmt"
 	"log"
 	"net"
@@ -12,44 +8,55 @@ import (
 
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
-	"gorm.io/driver/mysql"
-	"gorm.io/gorm"
+
+	// Import Internal Packages (Hexagonal Layers)
+	"api/pkg/database" // Shared Database Package
+	pb "api/proto"
+	"api/services/duelist/internal/adapters/handler"
+	"api/services/duelist/internal/adapters/repository"
+	"api/services/duelist/internal/core/services"
 )
 
 func main() {
-	godotenv.Load("../../../.env") // Adjust path as needed
+	// 1. Load Environment Variables
+	// ปรับ Path .env ตามความเหมาะสมของโครงสร้าง Folder จริง
+	if err := godotenv.Load("../../../.env"); err != nil {
+		log.Println("⚠️  Warning: .env file not found, using system environment variables")
+	}
 
 	dsn := os.Getenv("DB_DSN")
 	port := os.Getenv("DUELIST_PORT")
-	if port == "" {
-		port = "50051"
-	}
 
-	// 1. Init Infrastructure (Database)
-	db, err := gorm.Open(mysql.Open(dsn), &gorm.Config{})
+	// 2. Initialize Infrastructure (Database Singleton)
+	db, err := database.GetInstance(dsn)
 	if err != nil {
-		log.Fatal("Failed to connect DB:", err)
+		log.Fatalf("❌ Failed to initialize database: %v", err)
 	}
+	fmt.Println("✅ Database connected successfully (Duelist)")
 
-	// 2. Init Adapters (Repository)
-	repo := repository.NewMySQLRepository(db)
+	// 3. Initialize Adapters (Secondary / Outbound)
+	// Inject DB instance เข้าไปใน Repository
+	repoAdapter := repository.NewMySQLRepository(db)
 
-	// 3. Init Core Service (Inject Repository)
-	svc := services.NewDuelistService(repo)
+	// 4. Initialize Core Domain Service
+	// Inject Repository เข้าไปใน Service (Business Logic)
+	svc := services.NewDuelistService(repoAdapter)
 
-	// 4. Init Primary Adapter (gRPC Handler)
+	// 5. Initialize Primary Adapter (Inbound / Handler)
+	// Inject Service เข้าไปใน gRPC Handler
 	grpcHandler := handler.NewGrpcHandler(svc)
 
-	// 5. Run Server
+	// 6. Start gRPC Server
 	lis, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Fatal("Failed to listen:", err)
+		log.Fatalf("❌ Failed to listen on port %s: %v", port, err)
 	}
-	s := grpc.NewServer()
-	pb.RegisterDuelistServiceServer(s, grpcHandler)
 
-	fmt.Printf("🤠 Duelist Service running on :%s\n", port)
-	if err := s.Serve(lis); err != nil {
-		log.Fatal("Failed to serve:", err)
+	grpcServer := grpc.NewServer()
+	pb.RegisterDuelistServiceServer(grpcServer, grpcHandler)
+
+	fmt.Printf("🤠 Duelist Service (Hexagonal + gRPC) running on port :%s\n", port)
+	if err := grpcServer.Serve(lis); err != nil {
+		log.Fatalf("❌ Failed to serve gRPC: %v", err)
 	}
 }

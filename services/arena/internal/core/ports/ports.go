@@ -1,10 +1,13 @@
 package ports
 
-import "api/services/arena/internal/core/domain"
+import (
+	"api/services/arena/internal/core/domain"
+	"api/services/arena/internal/core/domain/entity"
+)
 
 // Secondary Port (Outbound) - สำหรับดึงข้อมูล Cowboy (เช่นจาก gRPC)
 type CowboyProvider interface {
-	GetCowboy(id string) (*domain.Cowboy, error)
+	GetCowboy(id string) (*entity.Cowboy, error)
 }
 
 // Secondary Port (Outbound) - สำหรับเก็บผล (Database)

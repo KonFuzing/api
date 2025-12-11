@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math/rand"
 	"time"
+	"api/services/arena/internal/core/domain/entity"
 )
 
 // Value Object: เก็บผลลัพธ์ (ไม่มี logic)
@@ -14,7 +15,7 @@ type BattleResult struct {
 
 // Domain Service: ควบคุมกฏการต่อสู้ (Battle Logic)
 // รับ Entity เข้ามา และสั่งงานผ่าน Method ของ Entity
-func SimulateFight(c1, c2 *Cowboy) BattleResult {
+func SimulateFight(c1, c2 *entity.Cowboy) BattleResult {
 	// Seed random
 	rand.Seed(time.Now().UnixNano())
 
@@ -23,7 +24,7 @@ func SimulateFight(c1, c2 *Cowboy) BattleResult {
 
 	// สร้างตัวแปร pointer ชั่วคราวเพื่อสลับเทิร์น (Attacker / Defender)
 	// เราใช้ตัวจริงเลยเพราะ Cowboy เป็น Pointer อยู่แล้ว และเรามี Method TakeDamage คุม State
-	var attacker, defender *Cowboy
+	var attacker, defender *entity.Cowboy
 
 	if c1.Speed >= c2.Speed {
 		attacker, defender = c1, c2

@@ -11,7 +11,7 @@ import (
 	"time"
 
 	// Import package ที่ generate มา
-	pb "github.com/yourusername/cowboy_arena/proto"
+	pb "api/proto"
 
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"

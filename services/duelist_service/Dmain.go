@@ -9,7 +9,7 @@ import (
 	"sync"
 
 	// Import package ที่ generate มา (เปลี่ยน path ตาม project จริง)
-	pb "github.com/yourusername/cowboy_arena/proto"
+	pb "api/proto"
 
 	"github.com/joho/godotenv"
 	"google.golang.org/grpc"
